@@ -257,6 +257,8 @@ function App() {
     const instructions = currentAgent?.instructions || "";
     const tools = currentAgent?.tools || [];
 
+    console.log("Available tools : ", tools);
+
     const sessionUpdateEvent = {
       type: "session.update",
       session: {
@@ -436,7 +438,7 @@ function App() {
 
   return (
     <div className="text-base flex flex-col h-screen bg-gray-100 text-gray-800 relative">
-      <div className="p-5 text-lg font-semibold flex justify-between items-center">
+      <div className="p-5 text-lg font-semibold flex justify-between items-center" style={{display: "none"}}>
         <div
           className="flex items-center cursor-pointer"
           onClick={() => window.location.reload()}

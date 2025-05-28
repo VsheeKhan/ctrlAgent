@@ -234,47 +234,77 @@ function filterTranscriptLogs(transcriptLogs: any[]) {
   return filtered;
 }
 
+
+
+import { loginCtrlAgent, newConversation, getWsUrl } from './api';
+
 export async function getNextResponseFromSupervisor(
   {
-    relevantContextFromLastUserMessage,
-  }: { relevantContextFromLastUserMessage: string },
+    query,
+  }: { query: string },
   transcriptLogs: any[],
   addTranscriptBreadcrumb?: (title: string, data?: any) => void
-) {
-  const filteredLogs = filterTranscriptLogs(transcriptLogs);
+): Promise<{ nextResponse: string }> {
+  try {
+    const token = await loginCtrlAgent();
+    const convId = await newConversation(token);
+    const wsUrl = getWsUrl(token, convId);
 
-  const body = {
-    model: "gpt-4.1",
-    messages: [
-      {
-        role: "system",
-        content: supervisorAgentInstructions,
-      },
-      {
-        role: "user",
-        content: `==== Conversation History ====
-    ${JSON.stringify(filteredLogs, null, 2)}
-    
-    ==== Relevant Context From Last User Message ===
-    ${relevantContextFromLastUserMessage}
-    `,
-      },
-    ],
-    tools: supervisorAgentTools,
-  };
+    return new Promise((resolve, reject) => {
+    console.log('Connecting to supervisor WS at', wsUrl);
+    const ws = new WebSocket(wsUrl);
+    let buffer = '';
+    let resolveTimer: number | null = null;
+    ws.onopen = () => {
+      console.log('Supervisor WS open — sending query:', query);
+      addTranscriptBreadcrumb?.('supervisor.ws.open');
+      // you might need to adjust payload shape to your server’s expectation
+      const payload = { text: query };
+      transcriptLogs.push({ role: 'user', content: query });
+      ws.send(JSON.stringify(payload));
+      addTranscriptBreadcrumb?.('supervisor.ws.sent', payload);
+    };
 
-  let message = await fetchChatCompletionMessage(body);
-  if (message.error) {
-    return { error: "Something went wrong." };
+    ws.onmessage = (evt) => {
+      let msg: any;
+      try {
+        msg = JSON.parse(evt.data);
+      } catch (err) {
+        return reject(err);
+      }
+      addTranscriptBreadcrumb?.('supervisor.ws.message', msg);
+
+      if (msg.output) {
+        // accumulate all chunks
+        buffer += msg.output;
+
+        // reset the “no‐more‐data” timer
+        if (resolveTimer) clearTimeout(resolveTimer);
+        resolveTimer = window.setTimeout(() => {
+          ws.close();
+          resolve({ nextResponse: buffer });
+        }, 2000);
+      }
+    };
+
+    ws.onerror = (err) => {
+      console.error('Supervisor WS error:', err);
+      addTranscriptBreadcrumb?.('supervisor.ws.error', err);
+      reject(err);
+    };
+
+    ws.onclose = (ev) => {
+      console.log('Supervisor WS closed:', ev.code, ev.reason);
+      addTranscriptBreadcrumb?.('supervisor.ws.closed', {
+        code: ev.code,
+        reason: ev.reason,
+      });
+      // if you want to reject on unexpected close:
+      // if (ev.code !== 1000) reject(new Error(`WS closed ${ev.code}`));
+    };
+  });
+  } catch (error) {
+    console.error('Failed to establish WebSocket connection:', error);
+    throw error;
   }
-
-  // Keep handling tool calls until there are none left
-  while (message.tool_calls && message.tool_calls.length > 0) {
-    message = await handleToolCalls(body, message, addTranscriptBreadcrumb);
-    if (message.error) {
-      return { error: "Something went wrong." };
-    }
-  }
-
-  return { nextResponse: message.content };
 }
